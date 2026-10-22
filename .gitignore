@@ -1,0 +1,48 @@
+# macOS metadata
+.DS_Store
+._*
+Icon?
+
+# Builds and release artifacts
+build/
+build-*/
+dist/
+release/
+*.dmg
+*.pkg
+*.plugin/
+*.app/
+*.dSYM/
+*.o
+*.a
+*.dylib
+*.framework/
+
+# External supplier libraries, models and materials stay on the user's machine.
+data/engine-resources/
+data/wink-resources/
+engine-resources/
+runtime/
+vendor/
+cache/
+downloads/
+
+# Local configuration, credentials and private evidence
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.mobileprovision
+*.cer
+*.key
+installation-result.json
+diagnostics*.json
+private/
+evidence/
+tmp/
+
+# Editor metadata
+.idea/
+.vscode/
+*.swp

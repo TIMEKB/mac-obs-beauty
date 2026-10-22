@@ -1,0 +1,16 @@
+{
+  "version": "8.7.0",
+  "name": "OBSLiveBeautyFaceDetector",
+  "bALG_BACH_CONFIG": true,
+  "effect": {
+    "Link": [],
+    "SubLink": null,
+    "model_names": {
+      "alg_model": [
+        "tt_face",
+        "tt_face_extra",
+        "tt_facefitting1220"
+      ]
+    }
+  }
+}

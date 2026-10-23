@@ -11,7 +11,7 @@
   },
   "nodes": [
     {
-      "name": "input",
+      "name": "blit_0",
       "type": "blit",
       "config": {
         "size": {
@@ -27,7 +27,7 @@
       }
     },
     {
-      "name": "landmarks",
+      "name": "face_0",
       "type": "face",
       "config": {
         "keyMaps": {
@@ -41,7 +41,7 @@
       }
     },
     {
-      "name": "fit",
+      "name": "face_fitting_0",
       "type": "face_fitting",
       "config": {
         "keyMaps": {
@@ -55,21 +55,21 @@
   ],
   "links": [
     {
-      "fromNode": "input",
+      "fromNode": "blit_0",
       "fromIndex": 0,
-      "toNode": "landmarks",
+      "toNode": "face_0",
       "toIndex": 0
     },
     {
-      "fromNode": "input",
+      "fromNode": "blit_0",
       "fromIndex": 0,
-      "toNode": "fit",
+      "toNode": "face_fitting_0",
       "toIndex": 0
     },
     {
-      "fromNode": "landmarks",
+      "fromNode": "face_0",
       "fromIndex": 0,
-      "toNode": "fit",
+      "toNode": "face_fitting_0",
       "toIndex": 1
     }
   ]

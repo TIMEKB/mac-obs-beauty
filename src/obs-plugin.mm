@@ -14,13 +14,14 @@
 #include "panel.h"
 #include "obs-dock-host.h"
 #include "resource-path.h"
+#include "face-debug.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-live-beauty", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-    return "OBS Live Beauty: local live-companion bridge for Apple Silicon";
+    return "Apple Silicon live beauty engines with OBS dock controls";
 }
 
 namespace {
@@ -47,6 +48,7 @@ struct Filter {
     gs_texture_t *output = nullptr;
     uint32_t outputWidth = 0;
     uint32_t outputHeight = 0;
+    LBDebugCapture debug;
 };
 
 std::mutex gFiltersMutex;
@@ -156,6 +158,8 @@ void destroyFilter(void *data)
         gs_texture_destroy(filter->engineInput);
     if (filter->output)
         gs_texture_destroy(filter->output);
+    // LBDebugCapture owns GPU resources; its destructor must run in graphics.
+    filter->debug.reset();
     obs_leave_graphics();
     delete filter;
 }
@@ -166,10 +170,14 @@ bool openPanel(obs_properties_t *, obs_property_t *, void *)
     return false;
 }
 
-obs_properties_t *properties(void *)
+bool openDebug(obs_properties_t *,obs_property_t *,void *data){
+    auto *f=static_cast<Filter*>(data);if(f)lb_debug_show(f->source,"直播伴侣 · 106点");return false;
+}
+obs_properties_t *properties(void *data)
 {
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_bool(props, "enabled", obs_module_text("Enable"));
+    obs_properties_add_button2(props,"face_debug","识别点诊断（仅诊断窗口）",openDebug,data);
     obs_properties_add_text(props, "panel_hint", obs_module_text("PanelHint"), OBS_TEXT_INFO);
     obs_properties_add_button2(props, "open_panel", obs_module_text("OpenPanel"), openPanel, nullptr);
     return props;
@@ -214,7 +222,9 @@ void renderFilter(void *data, gs_effect_t *)
         root = filter->resourceRoot;
         json = filter->settingsJSON;
     }
-    if (!enabled || !hasNodes) {
+    const bool debug=lb_debug_requested(filter->source);
+    if(debug&&(!enabled||!hasNodes)&&os_gettime_ns()-filter->debug.last<333333333ULL){obs_source_skip_video_filter(filter->source);return;}
+    if ((!enabled || !hasNodes) && !debug) {
         obs_source_skip_video_filter(filter->source);
         return;
     }
@@ -290,6 +300,17 @@ void renderFilter(void *data, gs_effect_t *)
     auto *outputObject = static_cast<uint32_t *>(gs_texture_get_obj(filter->output));
     const double timestamp = double(obs_get_video_frame_time()) / 1.0e9;
     bool processed = false;
+    if(debug){
+        @autoreleasepool {
+            NSData *bytes=[@(json.c_str()) dataUsingEncoding:NSUTF8StringEncoding];
+            id decoded=bytes?[NSJSONSerialization JSONObjectWithData:bytes options:NSJSONReadingMutableContainers error:nil]:nil;
+            NSMutableDictionary *temporary=[decoded isKindOfClass:NSMutableDictionary.class]?decoded:[NSMutableDictionary dictionary];
+            temporary[@"debug_points"]=@YES;temporary[@"enabled"]=@YES;
+            if(!enabled||!hasNodes){temporary[@"node_paths"]=@[];temporary[@"native_updates"]=@[];temporary[@"native_mode"]=@YES;}
+            NSData *encoded=[NSJSONSerialization dataWithJSONObject:temporary options:0 error:nil];
+            if(encoded)json.assign((const char*)encoded.bytes,encoded.length);
+        }
+    }
     if (inputObject && outputObject) {
         processed = lb_engine_render(filter->engine, *inputObject, *outputObject,
                                      int(width), int(height), timestamp, json.c_str());
@@ -301,7 +322,9 @@ void renderFilter(void *data, gs_effect_t *)
     if (!processed && !passthrough && status.rfind("READY", 0) == 0)
         status = "未就绪：本帧处理失败，当前保留原画。";
     setStatus(filter, status);
-    if (!processed) {
+    if(debug){LBDebugGeometry geometry;lb_engine_copy_debug(filter->engine,&geometry);
+        lb_debug_publish(filter->source,filter->debug,filter->engineInput,processed&&enabled&&hasNodes?filter->output:nullptr,geometry,status.c_str());}
+    if (!processed || !enabled || !hasNodes) {
         obs_source_skip_video_filter(filter->source);
         return;
     }
@@ -325,6 +348,8 @@ void renderFilter(void *data, gs_effect_t *)
 
 void menuCallback(void *) { lb_panel_show(); }
 void dockGroupCallback(void *) { lb_dock_group_in_main_window(); }
+void resourceMenuCallback(void *) { lb_panel_prepare_resources(); }
+void debugMenuCallback(void *) { lb_debug_choose_source(); }
 
 void frontendEvent(enum obs_frontend_event event, void *)
 {
@@ -371,6 +396,8 @@ bool obs_module_load(void)
     obs_register_source(&info);
     obs_frontend_add_tools_menu_item(obs_module_text("LiveBeauty"), menuCallback, nullptr);
     obs_frontend_add_tools_menu_item("将美颜面板停靠到主窗口", dockGroupCallback, nullptr);
+    obs_frontend_add_tools_menu_item("识别点诊断…", debugMenuCallback, nullptr);
+    obs_frontend_add_tools_menu_item("美颜运行资源…", resourceMenuCallback, nullptr);
     obs_frontend_add_event_callback(frontendEvent, nullptr);
     blog(LOG_INFO, "[obs-live-beauty] arm64 host loaded; dock controls register after frontend load");
     return true;
@@ -383,6 +410,7 @@ void obs_module_post_load(void)
 
 void obs_module_unload(void)
 {
+    lb_debug_shutdown();
     obs_frontend_remove_event_callback(frontendEvent, nullptr);
     lb_panel_shutdown();
 }
@@ -391,7 +419,8 @@ void obs_module_unload(void)
 /* Build-only fallback. This engine never claims to beautify or yields output. */
 void *lb_engine_create(const char *) { return new int(0); }
 bool lb_engine_render(void *, uint32_t, uint32_t, int, int, double, const char *) { return false; }
-const char *lb_engine_status(void *) { return "未就绪：当前为编译检查占位引擎，当前保留原画。"; }
+bool lb_engine_copy_debug(void *,LBDebugGeometry *g){if(g)*g={};return false;}
 bool lb_engine_is_passthrough(void *) { return false; }
+const char *lb_engine_status(void *) { return "未就绪：当前为编译检查占位引擎，当前保留原画。"; }
 void lb_engine_destroy(void *engine) { delete static_cast<int *>(engine); }
 #endif

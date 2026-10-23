@@ -9,6 +9,7 @@
 #include "panel.h"
 #include "obs-dock-host.h"
 #include "resource-path.h"
+#include "face-debug.h"
 
 static NSString *LBString(const char *value)
 {
@@ -123,6 +124,8 @@ static bool LBChooseSceneSource(obs_scene_t *, obs_sceneitem_t *item, void *data
     return true;
 }
 
+static void LBPromptRuntimeIfNeeded(void);
+
 @implementation LBPanelController
 
 - (instancetype)init
@@ -179,6 +182,7 @@ static bool LBChooseSceneSource(obs_scene_t *, obs_sceneitem_t *item, void *data
 - (void)loadCatalog
 {
     NSData *bytes = [NSData dataWithContentsOfFile:[self.resourceRoot stringByAppendingPathComponent:@"windows-catalog.json"]];
+    if (!bytes) { char *path=obs_module_file("windows-catalog.json"); if(path){bytes=[NSData dataWithContentsOfFile:LBString(path)];bfree(path);} }
     id decoded = bytes ? [NSJSONSerialization JSONObjectWithData:bytes options:0 error:nullptr] : nil;
     NSDictionary *catalog = [decoded isKindOfClass:NSDictionary.class] ? decoded : @{};
     NSMutableArray *items = [NSMutableArray array];
@@ -621,6 +625,9 @@ static bool LBChooseSceneSource(obs_scene_t *, obs_sceneitem_t *item, void *data
         }
     } else if ([action isEqual:@"addFilter"]) {
         [self addFilter];
+    } else if ([action isEqual:@"showFaceDebug"] && [body[@"sourceName"] isEqual:self.selectedSource]) {
+        if(!self.currentFilter)[self addFilter];
+        if(self.currentFilter)lb_debug_show(self.currentFilter,"直播伴侣 · 106点");
     } else if ([action isEqual:@"setEnabled"] && self.currentFilter) {
         [self endComparison];
         obs_data_t *settings = obs_source_get_settings(self.currentFilter);
@@ -683,6 +690,7 @@ static bool LBChooseSceneSource(obs_scene_t *, obs_sceneitem_t *item, void *data
     [self endComparison];
     if (visible) {
         [self refreshSources];
+        LBPromptRuntimeIfNeeded();
         if (!self.timer)
             self.timer = [NSTimer scheduledTimerWithTimeInterval:.75 target:self selector:@selector(refreshStatus:) userInfo:nil repeats:YES];
     } else {
@@ -713,6 +721,33 @@ static bool LBChooseSceneSource(obs_scene_t *, obs_sceneitem_t *item, void *data
 @end
 
 static LBPanelController *gPanel;
+
+void lb_panel_prepare_resources(void)
+{
+    if (!NSThread.isMainThread || !NSApp) return;
+    NSString *kit = @"/Library/Application Support/Mac OBS Beauty";
+    NSString *helper = [kit stringByAppendingPathComponent:@"obs-live-beauty-installer"];
+    if ([[NSFileManager defaultManager] isExecutableFileAtPath:helper]) {
+        NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:helper]; task.arguments = @[@"--assets-dir",kit];
+        NSError *error = nil;
+        if (![task launchAndReturnError:&error]) { NSAlert *alert=[NSAlert new]; alert.messageText=@"无法准备运行资源"; alert.informativeText=error.localizedDescription?:@"请查看项目安装说明。"; [alert runModal]; }
+    } else [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://github.com/TIMEKB/mac-obs-beauty/blob/main/README.install.md"]];
+}
+
+static void LBPromptRuntimeIfNeeded(void)
+{
+    static bool prompted=false;
+    if (prompted || !lb_dock_frontend_available() || [[NSFileManager defaultManager] fileExistsAtPath:[LBResourceRoot() stringByAppendingPathComponent:@"manifest.json"]]) return;
+    prompted=true;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert *alert=[NSAlert new]; alert.messageText=@"首次使用：准备美颜运行资源";
+        alert.informativeText=@"插件已经安装。美颜需要读取官方 Mac 直播伴侣的本地运行库，并准备效果资源。已准备过资源可直接选择原目录；首次使用可点击「准备资源」。";
+        [alert addButtonWithTitle:@"准备资源"]; [alert addButtonWithTitle:@"官方 Mac 直播伴侣"]; [alert addButtonWithTitle:@"稍后"];
+        NSModalResponse response=[alert runModal];
+        if(response==NSAlertFirstButtonReturn) lb_panel_prepare_resources();
+        else if(response==NSAlertSecondButtonReturn) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"https://streamingtool.douyin.com/"]];
+    });
+}
 
 void lb_panel_register_dock(void)
 {

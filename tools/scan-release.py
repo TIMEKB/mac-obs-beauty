@@ -49,12 +49,12 @@ def source_allowed(path):
     if parent == "src" and len(rest) == 1:
         return path.suffix in {".h", ".mm", ".cpp", ".c"} and not path.name.lower().startswith("wink")
     if parent == "installer" and len(rest) == 1:
-        return path.name in {"Info.plist.in", "Info.plist"} or path.suffix in {".mm", ".h", ".sh"}
+        return path.name in {"Info.plist.in", "Info.plist"} or path.suffix in {".mm", ".h", ".sh", ".command"}
     if parent == "tools" and len(rest) == 1:
         return path.suffix in {".sh", ".py"}
     if parent == "docs":
         return path.suffix == ".md"
-    if str(path) in {"resources/install-manifest.json", "data/panel.html", "data/windows-catalog.json"}:
+    if str(path) in {"resources/install-manifest.json", "data/panel.html", "data/face-debug.html", "data/windows-catalog.json"}:
         return True
     if len(parts) == 3 and parts[:2] == ("data", "locale"):
         return path.suffix == ".ini"
@@ -65,7 +65,7 @@ def source_allowed(path):
 
 def plugin_allowed(path):
     name = str(path)
-    return name in {"Contents/Info.plist", "Contents/MacOS/obs-live-beauty", "Contents/_CodeSignature/CodeResources", "Contents/Resources/panel.html", "Contents/Resources/windows-catalog.json"} or (
+    return name in {"Contents/Info.plist", "Contents/MacOS/obs-live-beauty", "Contents/_CodeSignature/CodeResources", "Contents/Resources/panel.html", "Contents/Resources/face-debug.html", "Contents/Resources/windows-catalog.json"} or (
         len(path.parts) == 4 and path.parts[:3] in {("Contents", "Resources", "locale"), ("Contents", "Resources", "detector")}
         and path.suffix == (".ini" if path.parts[2] == "locale" else ".json")
     )
@@ -73,7 +73,7 @@ def plugin_allowed(path):
 
 def app_allowed(path):
     name = str(path)
-    if name in {"Contents/Info.plist", "Contents/PkgInfo", "Contents/MacOS/obs-live-beauty-installer", "Contents/_CodeSignature/CodeResources", "Contents/Resources/install-manifest.json", "Contents/Resources/windows-catalog.json", "Contents/Resources/LICENSE", "Contents/Resources/README.md", "Contents/Resources/README.en.md", "Contents/Resources/AGENTS.md", "Contents/Resources/THIRD-PARTY.md", "Contents/Resources/ACKNOWLEDGMENTS.md", "Contents/Resources/NOTICE", "Contents/Resources/NOTICE.md"}:
+    if name in {"Contents/Info.plist", "Contents/PkgInfo", "Contents/MacOS/obs-live-beauty-installer", "Contents/_CodeSignature/CodeResources", "Contents/Resources/install-manifest.json", "Contents/Resources/windows-catalog.json", "Contents/Resources/LICENSE", "Contents/Resources/README.md", "Contents/Resources/README.en.md", "Contents/Resources/README.ja.md", "Contents/Resources/README.install.md", "Contents/Resources/AGENTS.md", "Contents/Resources/THIRD-PARTY.md", "Contents/Resources/ACKNOWLEDGMENTS.md", "Contents/Resources/NOTICE", "Contents/Resources/NOTICE.md"}:
         return True
     if len(path.parts) == 3 and path.parts[:2] == ("Contents", "Resources") and path.name.startswith("LICENSE-"):
         return True
@@ -85,7 +85,18 @@ def app_allowed(path):
     return False
 
 
+def kit_allowed(path):
+    if path.parts[:1] == (PLUGIN_NAME,):
+        return plugin_allowed(path.relative_to(PLUGIN_NAME))
+    name = str(path)
+    if name in {"obs-live-beauty-installer", "install.command", "install-manifest.json", "windows-catalog.json", "README-INSTALL.txt", "README.md", "README.en.md", "README.ja.md", "README.install.md", "AGENTS.md", "LICENSE", "ACKNOWLEDGMENTS.md", "THIRD-PARTY.md"}:
+        return True
+    return len(path.parts) == 2 and path.parts[0] == "detector" and path.suffix == ".json"
+
+
 def binary_allowed(mode, name):
+    if mode == "kit":
+        return name in {"obs-live-beauty-installer", f"{PLUGIN_NAME}/Contents/MacOS/obs-live-beauty"}
     if mode == "plugin":
         return name == "Contents/MacOS/obs-live-beauty"
     return name in {"Contents/MacOS/obs-live-beauty-installer", f"Contents/Resources/{PLUGIN_NAME}/Contents/MacOS/obs-live-beauty"}
@@ -93,7 +104,7 @@ def binary_allowed(mode, name):
 
 def inspect_file(mode, name, data):
     path = safe_path(name)
-    allowed = source_allowed(path) if mode == "source" else plugin_allowed(path) if mode == "plugin" else app_allowed(path)
+    allowed = source_allowed(path) if mode == "source" else plugin_allowed(path) if mode == "plugin" else kit_allowed(path) if mode == "kit" else app_allowed(path)
     if not allowed:
         fail(f"File is outside the {mode} allowlist: {name}")
     # A documented release-volume mount is public packaging metadata, not a workstation path.
@@ -151,6 +162,12 @@ def tree_files(root, source=False):
 def verify_required(mode, names):
     if mode == "source":
         return
+    if mode == "kit":
+        required = {"obs-live-beauty-installer", "install.command", "install-manifest.json", "windows-catalog.json", "README-INSTALL.txt", "README.md", "README.en.md", "README.ja.md", "README.install.md", "AGENTS.md", "LICENSE", "THIRD-PARTY.md", "ACKNOWLEDGMENTS.md", f"{PLUGIN_NAME}/Contents/Info.plist", f"{PLUGIN_NAME}/Contents/MacOS/obs-live-beauty", f"{PLUGIN_NAME}/Contents/Resources/face-debug.html", "detector/config.json"}
+        missing = required.difference(names)
+        if missing:
+            fail("Missing required kit files: " + ", ".join(sorted(missing)))
+        return
     required = {"Contents/Info.plist", "Contents/MacOS/obs-live-beauty"} if mode == "plugin" else {
         "Contents/Info.plist", "Contents/MacOS/obs-live-beauty-installer", "Contents/Resources/install-manifest.json",
         "Contents/Resources/windows-catalog.json", "Contents/Resources/LICENSE", "Contents/Resources/README.md",
@@ -166,17 +183,27 @@ def verify_required(mode, names):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("source", "plugin", "app", "zip"))
+    parser.add_argument("mode", choices=("source", "plugin", "app", "zip", "kit"))
     parser.add_argument("path", type=pathlib.Path)
     parser.add_argument("--compare-app", type=pathlib.Path)
     args = parser.parse_args()
     mode = "app" if args.mode == "zip" else args.mode
     names = set()
     if args.mode == "zip":
+        guide_found = False
         with zipfile.ZipFile(args.path) as archive:
             for member in archive.infolist():
                 safe_path(member.filename.rstrip('/'))
                 path = pathlib.PurePosixPath(member.filename)
+                if member.filename == "README-INSTALL.txt":
+                    if guide_found or member.is_dir() or stat.S_ISLNK(member.external_attr >> 16) or member.file_size > 64 * 1024:
+                        fail("Invalid or duplicate ZIP installation guide")
+                    guide = archive.read(member)
+                    inspect_file("app", "Contents/Resources/README.install.md", guide)
+                    if not args.compare_app or guide != (args.compare_app/"Contents/Resources/README.install.md").read_bytes():
+                        fail("ZIP installation guide differs from the app guide")
+                    guide_found = True
+                    continue
                 if path.parts[:1] != (APP_NAME,):
                     fail(f"Unexpected ZIP root: {member.filename}")
                 if member.is_dir():
@@ -193,6 +220,8 @@ def main():
                 names.add(name)
                 if args.compare_app and (args.compare_app/name).read_bytes() != data:
                     fail(f"ZIP differs from staged app: {name}")
+        if not guide_found:
+            fail("ZIP is missing the installation guide")
         if args.compare_app:
             staged_names = {n for n, _ in tree_files(args.compare_app)}
             if names != staged_names:

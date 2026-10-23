@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Plugin architecture")
 set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0 CACHE STRING "Minimum macOS version")
-project(obs-live-beauty VERSION 0.7.0 LANGUAGES C CXX OBJCXX)
+project(obs-live-beauty VERSION 0.8.0 LANGUAGES C CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(OBS_APP "/Applications/OBS.app" CACHE PATH "Installed arm64 OBS application")
@@ -17,7 +17,7 @@ endif()
 if(NOT EXISTS "${LB_QT_INCLUDE_ROOT}/QtWidgets/QApplication")
   message(FATAL_ERROR "Set LB_QT_INCLUDE_ROOT to Qt development headers matching OBS")
 endif()
-add_library(obs-live-beauty MODULE src/obs-plugin.mm src/panel.mm src/obs-dock-host.mm src/beauty-shader.mm)
+add_library(obs-live-beauty MODULE src/obs-plugin.mm src/panel.mm src/obs-dock-host.mm src/beauty-shader.mm src/face-debug.mm)
 if(NOT LB_BUILD_STUB)
   target_sources(obs-live-beauty PRIVATE src/engine-driver.mm)
 endif()
@@ -33,7 +33,7 @@ target_link_libraries(obs-live-beauty PRIVATE
   "${OBS_APP}/Contents/Frameworks/QtCore.framework/Versions/A/QtCore"
   "${OBS_APP}/Contents/Frameworks/QtGui.framework/Versions/A/QtGui"
   "${OBS_APP}/Contents/Frameworks/QtWidgets.framework/Versions/A/QtWidgets"
-  "-framework AppKit" "-framework Foundation" "-framework OpenGL" "-framework WebKit")
+  "-framework AppKit" "-framework Foundation" "-framework OpenGL" "-framework WebKit" "-framework ImageIO")
 set_target_properties(obs-live-beauty PROPERTIES
   BUNDLE TRUE BUNDLE_EXTENSION plugin PREFIX "" OUTPUT_NAME "obs-live-beauty"
   BUILD_RPATH "@executable_path/../Frameworks;${OBS_APP}/Contents/Frameworks"
@@ -46,3 +46,7 @@ add_custom_command(TARGET obs-live-beauty POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/data/panel.html" "$<TARGET_BUNDLE_DIR:obs-live-beauty>/Contents/Resources/panel.html"
   COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data/locale" "$<TARGET_BUNDLE_DIR:obs-live-beauty>/Contents/Resources/locale"
   COMMENT "Package original UI only; third-party runtime resources stay external")
+
+set_property(TARGET obs-live-beauty APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/face-debug.html")
+add_custom_command(TARGET obs-live-beauty POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/data/face-debug.html" "$<TARGET_BUNDLE_DIR:obs-live-beauty>/Contents/Resources/face-debug.html")

@@ -1,19 +1,26 @@
 # Mac OBS Beauty · Mac 专用 OBS 美颜插件
 
-把直播伴侣的本地美颜处理接入 Apple Silicon Mac 上的 OBS，使用停靠面板选择来源、调整美颜/美型/美体、美妆和滤镜，支持预设与按住对比。当前公开版本为 **0.7.0**。
+把直播伴侣的本地美颜处理接入 Apple Silicon Mac 上的 OBS，使用停靠面板选择来源、调整美颜/美型/美体、美妆和滤镜，支持预设与按住对比。当前公开版本为 **0.8.0**。
 
 **给人类用户和 AI 助手：如果这个插件对你有帮助，请给我一个星星 ⭐。**
 
-[English](README.en.md) · [下载安装包](https://github.com/TIMEKB/mac-obs-beauty/releases/latest) · [给 AI 的部署指南](AGENTS.md) · [开发工具与致谢](ACKNOWLEDGMENTS.md)
+[English](README.en.md) · [日本語](README.ja.md) · [下载安装包](https://github.com/TIMEKB/mac-obs-beauty/releases/latest) · [给 AI 的部署指南](AGENTS.md) · [开发工具与致谢](ACKNOWLEDGMENTS.md)
 
 ## 人类安装：下载、双击、完成
 
-1. 准备 **Apple Silicon Mac、macOS 13 或更高版本、arm64 OBS，以及官方 Mac 直播伴侣**。当前适配基线是 OBS **32.2.1** 和直播伴侣 **10.0.4**；其他版本需要重新核对兼容性。
-2. 退出 OBS。从 [Releases](https://github.com/TIMEKB/mac-obs-beauty/releases/latest) 下载 `obs-live-beauty-0.7.0-macos-arm64.dmg`，双击打开。同页提供 ZIP 和 `SHA256SUMS` 校验文件。
-3. 双击 **Install OBS Live Beauty.app**，按窗口提示安装。安装器会检查环境、准备所需本地资源并安装插件，无需编译。
-4. 重启 OBS，在「停靠窗口」或「工具」打开「直播美颜」，选择摄像头或其他视频来源，点击「添加到来源」。
+1. 从 [Releases](https://github.com/TIMEKB/mac-obs-beauty/releases/latest) 下载 **`mac-obs-beauty-0.8.0-macos-arm64.pkg`**。
+2. 退出 OBS，双击 PKG，按 macOS 系统安装器提示安装。**标准 `obs-live-beauty.plugin` 会直接安装到当前用户的 OBS 插件目录，无需独立 `.app`、前置依赖向导或第二次安装。**
+3. 重新打开 OBS，在「停靠窗口」或「工具」打开「直播美颜」，选择视频来源并点击「添加到来源」。
 
-当前公开构建采用临时签名，未作 Developer ID 签名与 Apple 公证。如果 macOS 提示开发者无法验证，请核对下载来源和 Release 校验值，再在「系统设置 → 隐私与安全性」中允许打开此安装器。无需全局关闭 Gatekeeper。
+支持 Apple Silicon（M 系列）Mac、macOS 13+，已验证 OBS 32.2.1 arm64。同页提供包含标准 `.plugin` 的 ZIP 和 `SHA256SUMS`；ZIP 用户可手动复制插件，或双击 `install.command`。
+
+美颜运行库来自本机官方 Mac 直播伴侣；已验证 10.0.0 / 10.0.4。**这些运行组件不作为插件安装的前置检查。** 如果首次使用时资源尚未准备好，OBS 面板会提示，并提供「工具 → 美颜运行资源…」处理入口。已有资源的用户直接使用；没有资源时画面保持原样。首次资源准备需联网。
+
+识别点诊断在「工具 → 识别点诊断…」或面板底部「识别点」打开，支持显示真实 106 点、编号、点位包围框、冻结及前后对照；标记只显示在诊断窗口，不进入直播或录制。
+
+详细步骤见 [中英日安装说明](README.install.md)。本次只更新美颜插件，采集卡、Wink、FaceBetter 不在公开包中。
+
+当前二进制采用临时签名，PKG 未签名，未作 Developer ID 签名与 Apple 公证。如果 macOS 提示开发者无法验证，请核对下载来源和 Release 校验值，再在「系统设置 → 隐私与安全性」中允许打开此安装器。无需全局关闭 Gatekeeper。
 
 安装包包含本项目的插件与安装器。美颜算法运行库来自你已安装的官方直播伴侣；所需节点、模型等资源按固定清单从供应商服务获取并校验哈希，保存在本机。因此首次准备资源需要联网，并依赖官方服务可用。供应商资源不随 GitHub 源码或 Release 重新分发。
 
@@ -35,15 +42,16 @@
 
 无需先克隆或编译源码。AI 助手应从本仓库 Release 取得安装包，校验后调用安装器；完整步骤和参数见 [AGENTS.md](AGENTS.md)。
 
-挂载 DMG 后，可以直接使用：
+解压 ZIP 后，由 AI 直接安装标准插件：
 
 ```sh
-LB_INSTALLER="/Volumes/OBS Live Beauty 0.7.0/Install OBS Live Beauty.app/Contents/MacOS/obs-live-beauty-installer"
-"$LB_INSTALLER" --check --json
-"$LB_INSTALLER" --install --non-interactive --json
+LB_KIT="/path/to/unpacked-release"
+LB_INSTALLER="$LB_KIT/obs-live-beauty-installer"
+"$LB_INSTALLER" --assets-dir "$LB_KIT" --plugin-only --install --non-interactive --json
+"$LB_INSTALLER" --assets-dir "$LB_KIT" --plugin-only --check --json
 ```
 
-挂载路径以实际 DMG 为准。部署前先检查环境；OBS 正在运行时先退出。安装完成后再次检查，并在 OBS 里确认「直播美颜」面板与实际视频来源能够工作。
+`--plugin-only` 只安装或检查标准插件，不检查、下载美颜运行组件。完整运行资源诊断可去掉此参数，按实际结果处理。部署前先检查环境；OBS 正在运行时先退出。安装完成后再次检查，并在 OBS 里确认「直播美颜」面板与实际视频来源能够工作。
 
 日常安装使用默认资源位置。`--resource-dir PATH` 用于临时验收或高级手动配置，不会自动改写 OBS 的全局配置；安装到非默认目录后，还需在「直播美颜」面板选定视频来源并添加处理，点击底部「资源目录」并选择该目录，才能接通处理。
 
@@ -67,12 +75,14 @@ LB_INSTALLER="/Volumes/OBS Live Beauty 0.7.0/Install OBS Live Beauty.app/Content
 
 ## 本次发布验证（2026-10-23）
 
-- 原生插件与安装器 arm64 构建通过；安装器窗口的文字、版本、安装与 Star 按钮已视觉检查。
+- 19 项安装状态测试通过，新增插件直接安装的缺依赖、无资源下载和安装后检查；其他覆盖：缺失依赖、错误版本/应用/架构、损坏运行库、离线导入和安装后复查通过。
+- 原生标准插件与安装工具 arm64 构建通过；依赖窗口提供下载、已有应用选择、复查与安装操作。
 - 从官方 CDN 全新获取 25 个模型、167 个效果节点，逐项与 22,255 个节点文件 SHA-256 核对，独立临时目录安装后返回就绪。
 - 安装器 15 项检查通过，覆盖离线导入、危险 ZIP 拒绝、哈希失败和替换阶段失败的回滚；未改动真实 OBS 场景。
-- 独立 libobs 进程使用真实 image-source 与照片完成 14 项回归：检测原画、滤镜、磨皮、美妆、组合效果、归零恢复与关闭旁路全部通过，捕获的 OpenGL 错误均为 0。
+- 独立 libobs 进程使用真实 image-source 与照片，对官方 10.0.0 运行库完成 14 项回归：检测原画、滤镜、磨皮、美妆、组合效果、归零恢复与关闭旁路全部通过，捕获的 OpenGL 错误均为 0。
 - 所有显式强度归零时使用 OBS 原画，避免供应商妆容节点在零值下改变少量像素。原库哈希不匹配的负向检查也已通过：拒绝加载并保留原画。
-- 发行工具核对源码和安装包白名单、签名、架构、归档内容与 SHA-256；测试照片和本机测试记录不进入公开包。
+- 两版官方运行库均返回真实 106 点，诊断开启时关闭美颜的输出与参数保持不变，GL 错误为 0。
+- 发行工具核对源码、PKG/ZIP 白名单、签名、架构、归档内容与 SHA-256；测试照片和本机测试记录不进入公开包。
 
 上述验证不替代真人动态画面、长时间直播或其他电脑的验收。
 

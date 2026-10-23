@@ -32,7 +32,7 @@ if not m:
 print(m[1])
 PY
 )"
-LB_ARTIFACT_BASE="obs-live-beauty-$LB_VERSION-macos-$LB_ARCH"
+LB_ARTIFACT_BASE="mac-obs-beauty-$LB_VERSION-macos-$LB_ARCH"
 
 lb_select_developer_dir() {
   # An explicit developer directory is preserved; otherwise the common setup chose CLT.

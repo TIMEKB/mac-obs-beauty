@@ -15,6 +15,7 @@
 #include "mac_effect_api.h"
 #include "mac_face_result_api.h"
 #include "beauty-shader.h"
+#include "face-debug-data.h"
 
 namespace {
 struct Engine;
@@ -226,12 +227,24 @@ extern "C" int lb_engine_copy_face_debug(void *context,float *points,int capacit
     return count;
 }
 extern "C" int lb_engine_face_result_code(void *context){return context?static_cast<Engine*>(context)->faceResultCode:-1;}
+extern "C" bool lb_engine_copy_debug(void *context,LBDebugGeometry *g){
+    if(!g)return false;*g={};auto *e=static_cast<Engine*>(context);if(!e)return false;
+    g->width=e->width;g->height=e->height;
+    if(e->faceResultCode!=0||e->width<=0||e->height<=0)return false;
+    for(int i=0;i<e->faces.face_count;i++){
+        const auto &f=e->faces.faces[i];LBDebugFace face;face.id=i;face.score=f.score;
+        for(const auto &p:f.points)face.points.push_back({p.x/e->width,p.y/e->height});
+        g->faces.push_back(std::move(face));
+    }
+    return true;
+}
 extern "C" void lb_engine_destroy(void *context){if(!context)return;delete static_cast<Engine*>(context);}
 extern "C" bool lb_engine_render(void *context,uint32_t source,uint32_t target,int w,int h,double timestamp,const char *settingsJSON){
     @autoreleasepool {
         if(!context)return false;
         Engine *e=static_cast<Engine*>(context);
         e->passthrough=false;
+        e->faces={};e->faceResultCode=-11;
         if(w<=0||h<=0||!source||!target||source==target)return false;
         NSData *data=settingsJSON?[@(settingsJSON) dataUsingEncoding:NSUTF8StringEncoding]:nil;
         id obj=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
@@ -250,6 +263,10 @@ extern "C" bool lb_engine_render(void *context,uint32_t source,uint32_t target,i
         for(id p in list)if([p isKindOfClass:NSString.class]){
             std::string node=str(p);if(!node.empty() && node.front()!='/')node=e->root+"/"+node;
             if([[NSFileManager defaultManager] fileExistsAtPath:ns(node)])nodes.push_back(node);
+        }
+        if([settings[@"debug_points"] boolValue]){
+            const std::string detector=e->root+"/nodes/native-face-detector";
+            if(std::find(nodes.begin(),nodes.end(),detector)==nodes.end())nodes.insert(nodes.begin(),detector);
         }
         // This original deformation scene switches its detection features off
         // while unused controls are neutralized. Keep the plain detection graph

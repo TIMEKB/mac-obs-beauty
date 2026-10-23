@@ -10,7 +10,7 @@
   <key>CFBundleName</key><string>obs-live-beauty</string>
   <key>CFBundlePackageType</key><string>BNDL</string>
   <key>CFBundleShortVersionString</key><string>@PROJECT_VERSION@</string>
-  <key>CFBundleVersion</key><string>700</string>
+  <key>CFBundleVersion</key><string>800</string>
   <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>

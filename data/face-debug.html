@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'">
+<title>识别点诊断</title><style>
+:root{color-scheme:dark;--bg:#17191f;--line:#30343e;--text:#e9edf4;--muted:#979fac;--accent:#f290ac}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--text);font:13px -apple-system,'PingFang SC',sans-serif;height:100vh;display:flex;flex-direction:column}header{padding:18px 22px 14px;border-bottom:1px solid var(--line)}h1{font-size:17px;margin:0 0 7px;font-weight:600}p{margin:0;line-height:1.7;color:var(--muted);font-size:12px}#source{margin-bottom:7px;color:#c7ced9}button,select{font:inherit;border:1px solid #414856;background:#282d37;color:var(--text);border-radius:5px;padding:5px 9px;cursor:pointer}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.controls{display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;padding:12px 22px;border-bottom:1px solid var(--line)}label{display:flex;gap:6px;align-items:center;white-space:nowrap;font-size:12px}input{accent-color:var(--accent)}.seg{display:flex;gap:5px}.seg button[aria-pressed=true]{border-color:var(--accent);color:#ffd0df;background:#f290ac18}.viewport{position:relative;flex:1;min-height:0;overflow:auto;display:flex;align-items:flex-start;background:repeating-conic-gradient(#181b21 0% 25%,#1c2027 0% 50%) 50% / 20px 20px;padding:16px}canvas{display:block;margin:auto;flex:none;box-shadow:0 6px 30px #0006}#empty{margin:auto;color:var(--muted);max-width:540px;text-align:center;line-height:1.9;padding:30px}footer{border-top:1px solid var(--line);padding:10px 22px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--muted)}#info{color:#c7d0dc}.green{color:#72f2bd}.amber{color:#ffc477}.note{font-size:11px}#paused{display:none;color:#ffc477}.stale canvas{opacity:.3}.stale #paused{display:inline}.transform{border-left:1px solid var(--line);padding-left:14px}.tip{padding:8px 22px;border-bottom:1px solid var(--line);font-size:11px;color:var(--muted)}@media(max-width:750px){header{padding:14px}.controls{padding:10px 14px;gap:9px 13px}.transform{border:0;padding:0}.tip,footer{padding-left:14px;padding-right:14px}}
+</style></head><body>
+<header><h1>识别点诊断</h1><p id="source">正在连接所选来源…</p><p>点位来自同一帧的美型前检测结果。仅在此窗口显示，不叠加到直播、录制或虚拟摄像头。</p></header>
+<div class="controls"><label><input id="active" type="checkbox" checked>实时诊断</label><label class="green"><input id="points" type="checkbox" checked>显示识别点</label><label><input id="numbers" type="checkbox" checked>点编号</label><label><input id="rect" type="checkbox" checked>点位包围框</label><label class="amber"><input id="head" type="checkbox">头部点</label><select id="zoom" aria-label="诊断画面缩放"><option value="fit">适应窗口</option><option value="2">放大2倍</option><option value="4">放大4倍</option></select></div>
+<div class="controls"><div class="seg"><button id="before" aria-pressed="true">原始输入</button><button id="after" aria-pressed="false">美颜输出</button></div><label class="transform">仅诊断点位：<select id="mapping" aria-label="诊断点位变换"><option value="identity">原始坐标</option><option value="flipY">上下翻转</option><option value="flipX">左右镜像</option></select></label><button id="freeze">冻结当前帧</button></div>
+<div class="tip" id="tip">绿色为面部点，橙色为头部点，编号按各引擎原始索引从0开始，图像为诊断缩略图。美型后轮廓改变时，原始检测点不会随之变形。</div>
+<main id="viewport" class="viewport"><div id="empty">等待新画面。请在 OBS 当前场景显示所选来源。<br>也可以关闭美颜参数，仅查看原始检测。</div><canvas id="canvas" hidden></canvas></main>
+<footer><span id="info">尚无检测结果</span><span id="status"></span><span id="paused">画面已过期，旧点已隐藏</span></footer>
+<script>
+(()=>{'use strict';const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d');
+let frame=null,before=null,after=null,mode='before',frozen=false,serial=0,last=0;
+const send=(action,extra={})=>window.webkit?.messageHandlers?.faceDebug?.postMessage({action,...extra});
+function mapped(p){const m=$('mapping').value;return[m==='flipX'?1-p[1]:p[1],m==='flipY'?1-p[2]:p[2]];}
+function draw(){if(!frame||!before)return;const image=mode==='before'?before:after||before;
+ const z=$('zoom').value,w=frame.width,h=frame.height,v=$('viewport');
+ const fit=Math.min((v.clientWidth-32)/w,(v.clientHeight-32)/h);const display=fit*(z==='fit'?1:Number(z));
+ const cssW=Math.max(1,w*display),cssH=Math.max(1,h*display),dpr=devicePixelRatio||1;
+ canvas.style.width=cssW+'px';canvas.style.height=cssH+'px';canvas.width=Math.round(cssW*dpr);canvas.height=Math.round(cssH*dpr);
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,cssW,cssH);ctx.drawImage(image,0,0,cssW,cssH);
+ const point=(p,color,prefix)=>{const[x,y]=mapped(p);if(x<0||y<0||x>1||y>1)return;const px=x*cssW,py=y*cssH;
+  ctx.fillStyle=color;ctx.beginPath();ctx.arc(px,py,2.2,0,Math.PI*2);ctx.fill();
+  if($('numbers').checked){ctx.font='10px ui-monospace,Menlo,monospace';ctx.lineWidth=2.6;ctx.strokeStyle='#10141ce6';ctx.strokeText(prefix+p[0],px+4,py-3);ctx.fillText(prefix+p[0],px+4,py-3);}};
+ const showPoints=$('points').checked,showHead=$('head').checked;
+ for(const f of frame.faces||[]){
+  if(showPoints)for(const p of f.points||[])point(p,'#72f2bd','');
+  if(showHead)for(const p of f.head||[])point(p,'#ffc477','h');
+  if($('rect').checked&&(f.points||[]).length){const ps=f.points.map(mapped),xs=ps.map(p=>p[0]),ys=ps.map(p=>p[1]);
+   const x=Math.min(...xs),y=Math.min(...ys),r=Math.max(...xs),b=Math.max(...ys);ctx.strokeStyle='#79bfff';ctx.lineWidth=1;ctx.strokeRect(x*cssW,y*cssH,(r-x)*cssW,(b-y)*cssH);}
+ }
+ const counts=(frame.faces||[]).map(f=>`${(f.points||[]).length}面部点 / ${(f.head||[]).length}头部点`).join('，');
+ $('info').textContent=`${w} × ${h} · ${(frame.faces||[]).length}张人脸${counts?' · '+counts:''}`;
+ $('tip').textContent=($('mapping').value!=='identity'?'当前使用临时点位变换，仅用于定位偏移，不修改算法输入或保存参数。 ':'')+(mode==='after'?'美颜输出上的点仍是美型前坐标；轮廓变化不能据此认定检测偏移。':'原始输入与同帧检测点对齐，可检查眼角、鼻尖、嘴唇及轮廓。')+' 编号从0开始，各引擎独立。';
+}
+function load(url){return new Promise((resolve,reject)=>{const i=new Image;i.onload=()=>resolve(i);i.onerror=reject;i.src=url;});}
+window.FaceDebug={async receive(m){if(m.type==='source'){++serial;frame=before=after=null;canvas.hidden=true;$('empty').hidden=false;$('source').textContent=m.name||m.engine||'识别点诊断';$('mapping').value='identity';$('active').checked=true;frozen=false;$('freeze').textContent='冻结当前帧';return;}
+ if(m.type==='idle'){if(!frozen){++serial;document.body.classList.add('stale');frame=null;canvas.hidden=true;$('empty').hidden=false;$('empty').textContent=m.message;$('info').textContent='无当前帧';}return;}
+ if(m.type!=='frame'||frozen)return;const token=++serial;
+ try{const imgs=await Promise.all([load(m.before),load(m.after)]);if(token!==serial)return;frame=m;[before,after]=imgs;last=Date.now();document.body.classList.remove('stale');canvas.hidden=false;$('empty').hidden=true;$('status').textContent=m.status||'';draw();}catch{if(token===serial)$('status').textContent='诊断图像不可用';}
+},getState(){return{frame,mode,frozen};}};
+for(const id of['points','numbers','rect','head','zoom','mapping'])$(id).onchange=draw;
+$('active').onchange=()=>{send('active',{value:$('active').checked});if(!$('active').checked){++serial;frame=null;canvas.hidden=true;$('empty').hidden=false;$('empty').textContent='实时诊断已关闭。';}};
+for(const name of['before','after'])$(name).onclick=()=>{mode=name;for(const n of['before','after'])$(n).setAttribute('aria-pressed',String(n===name));draw();};
+$('freeze').onclick=()=>{++serial;frozen=!frozen;$('freeze').textContent=frozen?'继续实时画面':'冻结当前帧';send('active',{value:!frozen&&$('active').checked});};
+new ResizeObserver(draw).observe($('viewport'));window.addEventListener('pagehide',()=>send('active',{value:false}));send('ready');
+})();
+</script></body></html>

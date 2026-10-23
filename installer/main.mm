@@ -3,7 +3,10 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 
-static NSString *const RepositoryURL = @"https://github.com/TIMEKB/obs-live-beauty";
+static NSString *const RepositoryURL = @"https://github.com/TIMEKB/mac-obs-beauty";
+static NSString *const OBSDownloadURL = @"https://github.com/obsproject/obs-studio/releases/download/32.2.1/OBS-Studio-32.2.1-macOS-Apple.dmg";
+static NSString *const CompanionDownloadURL = @"https://lf3-cdn-tos.bytegoofy.com/obj/tron-demo/7637411201357453594/429701125/10.0.0/darwin-universal/douyin-webcast-mate-v10.0.0-master-d169fb19-darwin-universal.dmg";
+static NSString *const CompanionWebsiteURL = @"https://streamingtool.douyin.com/";
 static NSString *const StarMessage = @"如果这个插件对你有帮助，请给我一个星星 ⭐。";
 static NSFileManager *FM(void) { return NSFileManager.defaultManager; }
 static NSString *Join(NSString *a, NSString *b) { return [a stringByAppendingPathComponent:b]; }
@@ -179,13 +182,13 @@ static BOOL Download(NSArray *urls, NSString *destination, NSString **error) {
 }
 
 @interface InstallOptions : NSObject
-@property(nonatomic, copy) NSString *app, *pluginDirectory, *resourceDirectory, *importDirectory, *assets;
-@property BOOL check, install, json, noninteractive;
+@property(nonatomic, copy) NSString *app, *obsApp, *pluginDirectory, *resourceDirectory, *importDirectory, *assets;
+@property BOOL check, install, json, noninteractive, explicitApp, explicitOBS, pluginOnly;
 @end
 @implementation InstallOptions
 - (instancetype)init {
     if ((self = [super init])) {
-        _app = @"/Applications/Douyin Webcast Mate.app";
+        _app = @"/Applications/Douyin Webcast Mate.app"; _obsApp = @"/Applications/OBS.app";
         _pluginDirectory = Join(NSHomeDirectory(), @"Library/Application Support/obs-studio/plugins");
         _resourceDirectory = Join(NSHomeDirectory(), @"Library/Application Support/obs-live-beauty/engine-resources");
         _importDirectory = @""; _assets = NSBundle.mainBundle.resourcePath ?: @"";
@@ -197,17 +200,24 @@ static BOOL OBSRunning(void) {
     for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) if ([app.bundleIdentifier isEqual:@"com.obsproject.obs-studio"]) return YES;
     return NO;
 }
+static NSString *DiscoverApp(NSString *name) {
+    NSString *system = Join(@"/Applications", name), *user = Join(Join(NSHomeDirectory(), @"Applications"), name);
+    return [FM() fileExistsAtPath:system] ? system : ([FM() fileExistsAtPath:user] ? user : system);
+}
 typedef void (^Progress)(NSString *, double);
 
 @interface Installer : NSObject
 @property(nonatomic, strong) InstallOptions *options;
-@property(nonatomic, strong) NSDictionary *spec;
+@property(nonatomic, strong) NSDictionary *spec, *selectedRuntime;
+@property(nonatomic, strong) NSArray *dependencies;
 @property(nonatomic, copy) NSString *version, *runtime;
 @property(nonatomic, strong) NSMutableArray<NSString *> *errors;
 @property(nonatomic) BOOL obsRunning, dependenciesReady;
 - (instancetype)initWithOptions:(InstallOptions *)options;
 - (NSDictionary *)check;
+- (BOOL)preflight;
 - (BOOL)installWithProgress:(Progress)progress;
+- (BOOL)installPluginOnly;
 - (NSDictionary *)result:(NSString *)action ok:(BOOL)ok message:(NSString *)message;
 @end
 @implementation Installer
@@ -222,19 +232,43 @@ typedef void (^Progress)(NSString *, double);
     if (!self.spec.count) [self.errors addObject:@"安装包缺少 install-manifest.json。"];
     if (![FM() fileExistsAtPath:Join(self.options.assets, @"obs-live-beauty.plugin/Contents/MacOS/obs-live-beauty")]) [self.errors addObject:@"安装包缺少插件二进制。"];
     if (!RegularFile(Join(self.options.assets, @"windows-catalog.json")) || !RegularFile(Join(self.options.assets, @"detector/config.json"))) [self.errors addObject:@"安装包缺少效果目录或检测配置。"];
-    NSDictionary *obsInfo = [NSDictionary dictionaryWithContentsOfFile:@"/Applications/OBS.app/Contents/Info.plist"];
+    if (self.options.pluginOnly) {
+        self.version = @""; self.runtime = @""; self.selectedRuntime = @{}; self.dependencies = @[];
+        if (self.obsRunning) [self.errors addObject:@"OBS 正在运行。请结束直播/录制并退出 OBS 后安装。"];
+        self.dependenciesReady = !self.errors.count; return self.dependenciesReady;
+    }
+    if (!self.options.explicitOBS) self.options.obsApp = DiscoverApp(@"OBS.app");
+    if (!self.options.explicitApp) self.options.app = DiscoverApp(@"Douyin Webcast Mate.app");
+    NSDictionary *obsInfo = [NSDictionary dictionaryWithContentsOfFile:Join(self.options.obsApp, @"Contents/Info.plist")];
     NSString *expectedOBS = String(self.spec[@"obs_version"]); if (!expectedOBS.length) expectedOBS = @"32.2.1";
-    if (![String(obsInfo[@"CFBundleShortVersionString"]) isEqual:expectedOBS]) [self.errors addObject:[NSString stringWithFormat:@"需要 /Applications/OBS.app 中的 OBS %@。", expectedOBS]];
-    NSArray *obsArchitectures = [NSBundle bundleWithPath:@"/Applications/OBS.app"].executableArchitectures;
-    if (![obsArchitectures containsObject:@(0x0100000c)]) [self.errors addObject:@"OBS 必须包含 Apple Silicon arm64 版本。"];
+    NSString *obsVersion = String(obsInfo[@"CFBundleShortVersionString"]);
+    NSString *obsCode = @"ready", *obsMessage = [NSString stringWithFormat:@"已找到 OBS %@（Apple Silicon）。", obsVersion];
+    if (!obsVersion.length) { obsCode = @"missing"; obsMessage = @"未安装 OBS。点击「下载兼容 OBS」，打开下载的 DMG，将 OBS 拖入 Applications。"; }
+    else if (![String(obsInfo[@"CFBundleIdentifier"]) isEqual:@"com.obsproject.obs-studio"]) { obsCode = @"invalid_app"; obsMessage = @"所选应用不是 OBS Studio，请重新选择。"; }
+    else if (![obsVersion isEqual:expectedOBS]) { obsCode = @"unsupported_version"; obsMessage = [NSString stringWithFormat:@"当前 OBS %@；需要已验证的 %@。下载前先退出 OBS，并保留你的场景设置。", obsVersion, expectedOBS]; }
+    else if (![[NSBundle bundleWithPath:self.options.obsApp].executableArchitectures containsObject:@(0x0100000c)]) { obsCode = @"unsupported_architecture"; obsMessage = @"OBS 需要 Apple Silicon arm64 版本，请下载兼容 OBS。"; }
+    if (![obsCode isEqual:@"ready"]) [self.errors addObject:obsMessage];
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:Join(self.options.app, @"Contents/Info.plist")];
     self.version = String(info[@"CFBundleShortVersionString"]);
-    NSString *expected = String(self.spec[@"source_app_version"]);
-    if (!self.version.length) [self.errors addObject:@"请先安装官方 Mac 直播伴侣，再重试。"];
-    else if (expected.length && ![self.version isEqual:expected]) [self.errors addObject:[NSString stringWithFormat:@"当前官方直播伴侣版本为 %@；本安装包已验证版本为 %@。", self.version, expected]];
-    NSDictionary *runtime = Dictionary(self.spec[@"runtime"]); NSString *relative = String(runtime[@"relative_path"]);
+    NSMutableArray *supported = [NSMutableArray array]; self.selectedRuntime = @{};
+    NSArray *runtimes = Array(self.spec[@"supported_runtimes"]);
+    if (!runtimes.count) runtimes = @[@{@"version":String(self.spec[@"source_app_version"]), @"runtime":Dictionary(self.spec[@"runtime"])}];
+    for (NSDictionary *entry in runtimes) {
+        [supported addObject:String(entry[@"version"])];
+        if ([self.version isEqual:String(entry[@"version"])]) self.selectedRuntime = Dictionary(entry[@"runtime"]);
+    }
+    NSString *relative = String(self.selectedRuntime[@"relative_path"]);
     self.runtime = SafeRelative(relative) ? Join(self.options.app, relative) : @"";
-    if (!self.runtime.length || !MatchHash(self.runtime, runtime)) [self.errors addObject:@"官方运行库缺失或 SHA-256 与已验证版本不符。"];
+    NSString *sourceCode = @"ready", *sourceMessage = [NSString stringWithFormat:@"已找到 Mac 直播伴侣 %@，运行库校验通过。", self.version];
+    if (!self.version.length) { sourceCode = @"missing"; sourceMessage = @"未安装 Mac 直播伴侣。点击下载，打开 DMG，将应用拖入 Applications，然后返回此窗口。"; }
+    else if (![String(info[@"CFBundleIdentifier"]) isEqual:@"com.bytedance.webcastmate.mac"]) { sourceCode = @"invalid_app"; sourceMessage = @"所选应用不是官方 Mac 直播伴侣，请重新选择。"; }
+    else if (!self.selectedRuntime.count) { sourceCode = @"unsupported_version"; sourceMessage = [NSString stringWithFormat:@"当前直播伴侣 %@；已验证版本：%@。请使用下方兼容版本下载或选择已有应用。", self.version, [supported componentsJoinedByString:@" / "]]; }
+    else if (!self.runtime.length || !MatchHash(self.runtime, self.selectedRuntime)) { sourceCode = @"runtime_mismatch"; sourceMessage = @"官方运行库缺失或校验不符，请重新下载安装兼容版本；不要手动修改哈希。"; }
+    if (![sourceCode isEqual:@"ready"]) [self.errors addObject:sourceMessage];
+    self.dependencies = @[
+        @{@"id":@"obs", @"status":obsCode, @"ready":@([obsCode isEqual:@"ready"]), @"path":self.options.obsApp, @"version":obsVersion, @"supported_versions":@[expectedOBS], @"download_url":OBSDownloadURL, @"official_url":@"https://obsproject.com/", @"instructions":obsMessage},
+        @{@"id":@"companion", @"status":sourceCode, @"ready":@([sourceCode isEqual:@"ready"]), @"path":self.options.app, @"version":self.version, @"supported_versions":supported, @"download_url":CompanionDownloadURL, @"official_url":CompanionWebsiteURL, @"instructions":sourceMessage}
+    ];
     if (self.obsRunning) [self.errors addObject:@"OBS 正在运行。请自行退出 OBS 后重试，安装器不会关闭它。"];
     NSString *resource = self.options.resourceDirectory, *pluginDirectory = self.options.pluginDirectory;
     if ([resource isEqual:@"/"] || [resource isEqual:NSHomeDirectory()] || [resource isEqual:pluginDirectory] ||
@@ -262,7 +296,7 @@ typedef void (^Progress)(NSString *, double);
         else if (!VerifyTree(Join(root, path), Array(asset[@"files"]))) return NO;
     }
     NSDictionary *manifest = ReadJSON(Join(root, @"manifest.json"));
-    if (![String(manifest[@"runtime_library"]) isEqual:self.runtime] || ![String(manifest[@"runtime_sha256"]) isEqual:String(Dictionary(self.spec[@"runtime"])[@"sha256"])]) return NO;
+    if (![String(manifest[@"runtime_library"]) isEqual:self.runtime] || ![String(manifest[@"runtime_sha256"]) isEqual:String(self.selectedRuntime[@"sha256"])]) return NO;
     if (![Digest(Join(root, @"windows-catalog.json"), NO) isEqual:Digest(Join(self.options.assets, @"windows-catalog.json"), NO)]) return NO;
     for (NSString *file in [FM() enumeratorAtPath:Join(self.options.assets, @"detector")]) {
         NSString *source = Join(Join(self.options.assets, @"detector"), file);
@@ -276,16 +310,16 @@ typedef void (^Progress)(NSString *, double);
     return RegularFile(installed) && [Digest(installed, NO) isEqual:Digest(payload, NO)];
 }
 - (NSDictionary *)check {
-    BOOL dependencies = [self preflight]; BOOL resources = dependencies && [self resourcesReady];
-    if (dependencies && !resources) [self.errors addObject:@"本地效果资源尚未安装或校验不匹配；执行安装后将导入或下载固定版本资源。"];
+    BOOL dependencies = [self preflight]; BOOL resources = !self.options.pluginOnly && dependencies && [self resourcesReady];
+    if (!self.options.pluginOnly && dependencies && !resources) [self.errors addObject:@"本地效果资源尚未安装或校验不匹配；执行安装后将导入或下载固定版本资源。"];
     BOOL plugin = dependencies && [self pluginReady];
     if (dependencies && !plugin) [self.errors addObject:@"插件尚未安装或与当前安装包版本不同。"];
-    return [self result:@"check" ok:dependencies && resources && plugin message:resources && plugin ? @"依赖、插件和效果资源已就绪。" : @"尚未就绪，请查看 errors。"];
+    return [self result:@"check" ok:dependencies && (resources || self.options.pluginOnly) && plugin message:(resources || self.options.pluginOnly) && plugin ? (self.options.pluginOnly ? @"标准 OBS 插件已安装。" : @"依赖、插件和效果资源已就绪。") : @"尚未就绪，请查看 errors。"];
 }
 - (NSDictionary *)result:(NSString *)action ok:(BOOL)ok message:(NSString *)message {
     return @{@"action":action, @"ok":@(ok), @"ready":@(ok), @"obs_running":@(self.obsRunning), @"source_app":self.options.app,
-             @"source_version":self.version ?: @"", @"plugin_dir":self.options.pluginDirectory, @"resource_dir":self.options.resourceDirectory,
-             @"dependencies_ready":@(self.dependenciesReady), @"resources_ready":@(self.dependenciesReady && [self resourcesReady]), @"plugin_ready":@(self.dependenciesReady && [self pluginReady]),
+             @"source_version":self.version ?: @"", @"obs_app":self.options.obsApp, @"dependencies":self.dependencies ?: @[], @"plugin_dir":self.options.pluginDirectory, @"resource_dir":self.options.resourceDirectory,
+             @"scope":self.options.pluginOnly ? @"plugin" : @"complete", @"dependencies_ready":@(self.dependenciesReady), @"resources_ready":@(!self.options.pluginOnly && self.dependenciesReady && [self resourcesReady]), @"plugin_ready":@(self.dependenciesReady && [self pluginReady]),
              @"message":message ?: @"", @"errors":[self.errors copy], @"repository":RepositoryURL, @"star_message":StarMessage};
 }
 - (BOOL)prepareAsset:(NSDictionary *)asset stage:(NSString *)stage work:(NSString *)work error:(NSString **)error {
@@ -317,8 +351,30 @@ typedef void (^Progress)(NSString *, double);
     }
     return YES;
 }
+- (BOOL)installPluginOnly {
+    NSString *error = nil, *name = @"obs-live-beauty.plugin";
+    NSString *destination = Join(self.options.pluginDirectory, name);
+    NSString *nonce = NSUUID.UUID.UUIDString;
+    NSString *stage = Join(self.options.pluginDirectory, [@".plugin-install-" stringByAppendingString:nonce]);
+    NSString *previous = [destination stringByAppendingFormat:@".previous-%@", nonce];
+    if (!Directory(self.options.pluginDirectory, &error) || !Copy(Join(self.options.assets, name), stage, &error)) {
+        [self.errors addObject:error ?: @"无法准备插件文件。"];
+        [FM() removeItemAtPath:stage error:nil]; return NO;
+    }
+    NSError *fileError = nil; BOOL moved = NO, placed = NO, ok = YES;
+    if (OBSRunning()) { ok = NO; error = @"OBS 已启动，请退出后重新安装。"; }
+    if (ok && [FM() fileExistsAtPath:destination]) { moved = [FM() moveItemAtPath:destination toPath:previous error:&fileError]; ok = moved; }
+    if (ok) { placed = [FM() moveItemAtPath:stage toPath:destination error:&fileError]; ok = placed && [self pluginReady]; }
+    if (!ok) {
+        [self.errors addObject:error ?: fileError.localizedDescription ?: @"插件安装校验失败。"];
+        if (placed) [FM() removeItemAtPath:destination error:nil];
+        if (moved && ![FM() moveItemAtPath:previous toPath:destination error:&fileError]) [self.errors addObject:[@"恢复旧插件失败，原件保留于：" stringByAppendingString:previous]];
+    } else if (moved) [FM() removeItemAtPath:previous error:nil];
+    [FM() removeItemAtPath:stage error:nil]; return ok;
+}
 - (BOOL)installWithProgress:(Progress)progress {
     if (![self preflight]) return NO;
+    if (self.options.pluginOnly) return [self installPluginOnly];
     NSString *failure = nil, *resourceParent = self.options.resourceDirectory.stringByDeletingLastPathComponent;
     NSString *nonce = NSUUID.UUID.UUIDString;
     NSString *stage = Join(resourceParent, [@".engine-resources.install-" stringByAppendingString:nonce]);
@@ -345,7 +401,7 @@ typedef void (^Progress)(NSString *, double);
              Copy(Join(self.options.assets, @"detector"), Join(stage, @"nodes/native-face-detector"), &failure);
     }
     if (ok) {
-        NSDictionary *manifest = @{@"schema_version":@1, @"source_app_version":self.version ?: @"", @"runtime_library":self.runtime ?: @"", @"runtime_sha256":String(Dictionary(self.spec[@"runtime"])[@"sha256"]), @"models":Array(self.spec[@"models"])};
+        NSDictionary *manifest = @{@"schema_version":@1, @"source_app_version":self.version ?: @"", @"runtime_library":self.runtime ?: @"", @"runtime_sha256":String(self.selectedRuntime[@"sha256"]), @"models":Array(self.spec[@"models"])};
         ok = WriteJSON(manifest, Join(stage, @"manifest.json"), &failure) && Copy(Join(self.options.assets, pluginName), pluginStage, &failure);
     }
     if (ok && OBSRunning()) { ok = NO; failure = @"OBS 已启动，请退出 OBS 后重试。"; }
@@ -378,34 +434,85 @@ typedef void (^Progress)(NSString *, double);
 @interface InstallerWindow : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) Installer *installer;
 @property(nonatomic, strong) NSWindow *window;
-@property(nonatomic, strong) NSTextField *status, *detail;
+@property(nonatomic, strong) NSTextField *status, *detail, *obsStatus, *companionStatus;
 @property(nonatomic, strong) NSProgressIndicator *progress;
-@property(nonatomic, strong) NSButton *installButton, *starButton;
+@property(nonatomic, strong) NSButton *installButton;
+@property(nonatomic, strong) NSMutableArray<NSButton *> *controls;
+@property BOOL busy, completed;
 @end
 @implementation InstallerWindow
+- (NSTextField *)label:(NSString *)text x:(double)x y:(double)y width:(double)width height:(double)height size:(double)size {
+    NSTextField *label = [NSTextField wrappingLabelWithString:text]; label.font = [NSFont systemFontOfSize:size]; label.frame = NSMakeRect(x,y,width,height); [self.window.contentView addSubview:label]; return label;
+}
+- (NSButton *)button:(NSString *)title x:(double)x y:(double)y width:(double)width action:(SEL)action tag:(NSInteger)tag {
+    NSButton *button = [NSButton buttonWithTitle:title target:self action:action]; button.bezelStyle = NSBezelStyleRounded; button.frame = NSMakeRect(x,y,width,32); button.tag = tag; [self.window.contentView addSubview:button]; [self.controls addObject:button]; return button;
+}
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,580,330) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"OBS 直播美颜安装器"; [self.window center];
-    NSView *content = self.window.contentView;
-    NSTextField *title = [NSTextField labelWithString:@"OBS 直播美颜 · Apple Silicon"]; title.font = [NSFont boldSystemFontOfSize:23]; title.frame = NSMakeRect(28,274,530,35); [content addSubview:title];
-    self.status = [NSTextField wrappingLabelWithString:@"安装到当前用户，不修改 OBS 场景或原应用。"]; self.status.frame = NSMakeRect(28,222,524,45); [content addSubview:self.status];
-    NSString *sourceVersion = String(self.installer.spec[@"source_app_version"]), *obsVersion = String(self.installer.spec[@"obs_version"]);
-    self.detail = [NSTextField wrappingLabelWithString:[NSString stringWithFormat:@"需要已安装官方 Mac 直播伴侣 %@ 和 arm64 OBS %@。\n缺少效果资源时，将从固定的官方 CDN 下载并校验。", sourceVersion.length ? sourceVersion : @"指定版本", obsVersion.length ? obsVersion : @"32.2.1"]]; self.detail.frame = NSMakeRect(28,118,524,100); self.detail.font = [NSFont systemFontOfSize:12]; [content addSubview:self.detail];
-    self.progress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(28,104,524,14)]; self.progress.indeterminate = NO; self.progress.minValue = 0; self.progress.maxValue = 100; [content addSubview:self.progress];
-    self.installButton = [NSButton buttonWithTitle:@"检查并安装" target:self action:@selector(install:)]; self.installButton.bezelStyle = NSBezelStyleRounded; self.installButton.frame = NSMakeRect(412,51,140,34); [content addSubview:self.installButton];
-    self.starButton = [NSButton buttonWithTitle:@"给项目一个星星 ⭐" target:self action:@selector(star:)]; self.starButton.bezelStyle = NSBezelStyleRounded; self.starButton.frame = NSMakeRect(28,51,180,34); [content addSubview:self.starButton];
-    NSTextField *starText = [NSTextField labelWithString:StarMessage]; starText.font = [NSFont systemFontOfSize:12]; starText.frame = NSMakeRect(28,20,524,20); [content addSubview:starText];
-    [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular]; self.controls = [NSMutableArray array];
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,680,560) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    self.window.title = @"Mac OBS 美颜 · 安装与依赖检查"; [self.window center];
+    NSTextField *title = [self label:@"Mac OBS Beauty · Mac OBS 美颜" x:28 y:504 width:625 height:35 size:24]; title.font = [NSFont boldSystemFontOfSize:24];
+    self.status = [self label:@"正在自动检查…" x:28 y:464 width:625 height:34 size:14];
+    [self label:@"1 · OBS Studio（Apple Silicon）" x:28 y:431 width:625 height:25 size:15];
+    self.obsStatus = [self label:@"检查中…" x:28 y:377 width:625 height:52 size:13];
+    [self button:@"下载兼容 OBS" x:28 y:340 width:150 action:@selector(download:) tag:0];
+    [self button:@"选择已有 OBS…" x:190 y:340 width:170 action:@selector(choose:) tag:0];
+    [self label:@"2 · 官方 Mac 直播伴侣（保留应用以提供美颜运行库）" x:28 y:302 width:625 height:25 size:15];
+    self.companionStatus = [self label:@"检查中…" x:28 y:247 width:625 height:52 size:13];
+    [self button:@"下载 Mac 直播伴侣" x:28 y:210 width:170 action:@selector(download:) tag:1];
+    [self button:@"选择已有直播伴侣…" x:210 y:210 width:180 action:@selector(choose:) tag:1];
+    [self button:@"官方网站" x:402 y:210 width:115 action:@selector(website:) tag:1];
+    self.detail = [self label:@"下载后打开 DMG，将依赖应用拖入 Applications。返回这里会自动重新检查。首次资源准备需要联网，无需 Xcode、Python 或 Homebrew。" x:28 y:133 width:625 height:69 size:12];
+    self.progress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(28,114,624,12)]; self.progress.indeterminate = NO; self.progress.minValue = 0; self.progress.maxValue = 100; [self.window.contentView addSubview:self.progress];
+    [self button:@"重新检查" x:28 y:66 width:115 action:@selector(refresh:) tag:0];
+    [self button:@"给项目一个星星 ⭐" x:156 y:66 width:180 action:@selector(star:) tag:0];
+    self.installButton = [self button:@"安装美颜插件" x:492 y:66 width:160 action:@selector(install:) tag:0]; self.installButton.enabled = NO;
+    [self label:StarMessage x:28 y:25 width:625 height:24 size:12];
+    [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [self refresh:nil];
+}
+- (void)setWorking:(BOOL)working {
+    self.busy = working; for (NSButton *button in self.controls) button.enabled = !working;
+    self.installButton.enabled = !working && self.installer.dependenciesReady;
+}
+- (void)refresh:(id)sender {
+    if (self.busy) return; [self setWorking:YES]; self.status.stringValue = @"检查版本和运行库，请稍候…";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ @autoreleasepool {
+        BOOL ready = [self.installer preflight]; NSArray *deps = self.installer.dependencies; NSArray *errors = [self.installer.errors copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (deps.count == 2) { self.obsStatus.stringValue = String(deps[0][@"instructions"]); self.companionStatus.stringValue = String(deps[1][@"instructions"]); }
+            self.status.stringValue = ready ? (self.completed ? @"安装完成。可以打开 OBS 使用直播美颜。" : @"依赖已就绪。点击「安装美颜插件」完成安装。") : @"请按下面提示补齐依赖，然后返回此窗口。";
+            if (!ready) self.detail.stringValue = [errors componentsJoinedByString:@"\n"];
+            else self.detail.stringValue = self.completed ? @"打开 OBS → 停靠窗口 / 工具 → 直播美颜，选择视频来源并点击「添加到来源」。请保留官方直播伴侣应用。" : @"安装到当前用户。首次准备效果资源需要联网；下载失败时会显示具体原因，之后可重试。无需编译或开发工具。";
+            [self setWorking:NO];
+        });
+    }});
+}
+- (void)applicationDidBecomeActive:(NSNotification *)notification { if (self.window && !self.busy) [self refresh:nil]; }
+- (void)download:(NSButton *)sender {
+    NSString *link = sender.tag ? CompanionDownloadURL : OBSDownloadURL;
+    if (![NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:link]]) self.detail.stringValue = @"无法打开浏览器，请使用官方网站下载，或检查默认浏览器设置。";
+    else self.detail.stringValue = @"浏览器会下载官方兼容版本。下载完成后打开 DMG，将应用拖入 Applications；安装后返回这里自动检查。若下载失败，可点击官方网站，或稍后重试。";
+}
+- (void)website:(NSButton *)sender { [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:CompanionWebsiteURL]]; }
+- (void)choose:(NSButton *)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel]; panel.title = sender.tag ? @"选择已安装的官方 Mac 直播伴侣" : @"选择已安装的 OBS.app"; panel.canChooseDirectories = NO; panel.canChooseFiles = YES; panel.allowsMultipleSelection = NO; panel.allowedFileTypes = @[@"app"];
+    if ([panel runModal] == NSModalResponseOK) {
+        NSString *path = panel.URL.path;
+        if ([path hasPrefix:@"/Volumes/"]) { self.detail.stringValue = @"请先将应用从 DMG 拖入 Applications，再选择已安装的应用，避免弹出磁盘后无法使用。"; return; }
+        if (sender.tag) { self.installer.options.app = path; self.installer.options.explicitApp = YES; }
+        else { self.installer.options.obsApp = path; self.installer.options.explicitOBS = YES; }
+        [self refresh:nil];
+    }
 }
 - (void)install:(id)sender {
-    self.installButton.enabled = NO; self.status.stringValue = @"检查依赖…";
+    if (self.busy) return; [self setWorking:YES]; self.status.stringValue = @"检查依赖…";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ @autoreleasepool {
         BOOL ok = [self.installer installWithProgress:^(NSString *message, double percent) { dispatch_async(dispatch_get_main_queue(), ^{ self.status.stringValue = message; self.progress.doubleValue = percent * 100; }); }];
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.installButton.enabled = YES; self.installButton.title = ok ? @"重新检查并安装" : @"重试安装";
+            self.completed = ok; [self setWorking:NO];
+            self.installButton.title = ok ? @"重新安装 / 修复" : @"重试安装";
             if (!ok) { self.status.stringValue = @"尚未安装，请处理以下问题后重试。"; self.detail.stringValue = [self.installer.errors componentsJoinedByString:@"\n"]; }
-            else self.detail.stringValue = @"安装完成。请启动 OBS，在「停靠窗口」勾选「直播美颜」，再选择视频来源。\n运行库保持在官方应用目录中，请保留官方应用。";
+            else { self.status.stringValue = @"安装完成。打开 OBS 即可使用。"; self.detail.stringValue = @"OBS → 停靠窗口 / 工具 → 直播美颜，选择视频来源并点击「添加到来源」。请保留官方直播伴侣应用。"; }
         });
     }});
 }
@@ -421,16 +528,18 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         else if ([arg isEqual:@"--install"]) options.install = YES;
         else if ([arg isEqual:@"--json"]) options.json = YES;
         else if ([arg isEqual:@"--non-interactive"]) options.noninteractive = YES;
-        else if ([arg isEqual:@"--app"] || [arg isEqual:@"--plugin-dir"] || [arg isEqual:@"--resource-dir"] || [arg isEqual:@"--resources-from"] || [arg isEqual:@"--assets-dir"]) {
+        else if ([arg isEqual:@"--plugin-only"]) options.pluginOnly = YES;
+        else if ([arg isEqual:@"--app"] || [arg isEqual:@"--obs-app"] || [arg isEqual:@"--plugin-dir"] || [arg isEqual:@"--resource-dir"] || [arg isEqual:@"--resources-from"] || [arg isEqual:@"--assets-dir"]) {
             if (++i >= argc) { argumentError = [@"缺少参数：" stringByAppendingString:arg]; break; }
             NSString *value = Absolute(@(argv[i]));
-            if ([arg isEqual:@"--app"]) options.app = value;
+            if ([arg isEqual:@"--app"]) { options.app = value; options.explicitApp = YES; }
+            else if ([arg isEqual:@"--obs-app"]) { options.obsApp = value; options.explicitOBS = YES; }
             else if ([arg isEqual:@"--plugin-dir"]) options.pluginDirectory = value;
             else if ([arg isEqual:@"--resource-dir"]) options.resourceDirectory = value;
             else if ([arg isEqual:@"--assets-dir"]) options.assets = value;
             else options.importDirectory = value;
         } else if ([arg isEqual:@"--help"]) {
-            puts("obs-live-beauty-installer [--check | --install] [--non-interactive] [--json]\n  --app PATH             Official Mac application (default /Applications/Douyin Webcast Mate.app)\n  --resources-from PATH  Import verified existing engine-resources\n  --plugin-dir PATH      Parent OBS plugins directory\n  --resource-dir PATH    External engine-resources destination\n  --assets-dir PATH      Installer payload override (for staging/verification)\nNo arguments: open the installation window. Exit: 0 success, 1 install failure, 2 check not ready, 64 invalid arguments."); return 0;
+            puts("obs-live-beauty-installer [--check | --install] [--non-interactive] [--json]\n  --plugin-only          Install/check the standard plugin without checking or downloading runtime dependencies\n  --obs-app PATH         Installed OBS application\n  --app PATH             Installed official Mac companion application\n  --resources-from PATH  Import verified existing engine-resources\n  --plugin-dir PATH      Parent OBS plugins directory\n  --resource-dir PATH    External engine-resources destination\n  --assets-dir PATH      Installer payload override (for staging/verification)\nNo arguments: open the installation window. Exit: 0 success, 1 install failure, 2 check not ready, 64 invalid arguments."); return 0;
         } else { argumentError = [@"未知参数：" stringByAppendingString:arg]; break; }
     }
     if (options.check && options.install) argumentError = @"--check 与 --install 不能同时使用。";
